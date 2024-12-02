@@ -1,7 +1,7 @@
 FROM python:3.9-slim
 
 # Install dependencies
-RUN apt-get update && apt-get install -y libgomp1
+RUN apt-get update && apt-get install -y libgomp1 && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
@@ -14,7 +14,7 @@ COPY app.py /app/app.py
 COPY model /app/model  
 
 # Install Python packages
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 # Expose port for Cloud Run
 EXPOSE 8080
