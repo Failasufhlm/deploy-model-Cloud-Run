@@ -1,55 +1,93 @@
-from flask import Flask, request, jsonify
-import tensorflow_decision_forests as tfdf
-import tensorflow as tf
-import pandas as pd
+import pickle
 import numpy as np
+import pandas as pd
+import re
+import string
+import nltk
+from nltk.corpus import stopwords
+from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import streamlit as st
 
-app = Flask(__name__)
+nltk.download('stopwords')
 
-# Load the trained model
-model = tfdf.keras.GradientBoostedTreesModel()
-model.load("/app/model")  # Path dalam container Cloud Run, pastikan menempatkan model di lokasi ini
+stop_words = set(stopwords.words('indonesian'))
 
-primary_labels  = ['Depression', 'Anger', 'Mania', 'Anxiety', 'Somatic Symptoms', 'Suicidal Ideation', 
-                   'Psychosis', 'Sleep Problems', 'Memory', 'Repetitive Thoughts and Behaviors', 
-                   'Dissociation', 'Personality Functioning', 'Substance Use']
+factory = StemmerFactory()
+stemmer = factory.create_stemmer()
 
-def convert_to_binary(probability, threshold=0.5):
-    return 1 if probability >= threshold else 0
+def preprocess_text(text):
+    # Menghapus URL
+    text = re.sub(r'http\S+|www\S+', '', text)
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    try:
-        input_data = request.get_json()
-        
-        # Convert input to DataFrame
-        input_df = pd.DataFrame([input_data])
-        
-        # Validate features
-        train_features = [f"Q{i}" for i in range(1, 24)]
-        missing_features = set(train_features) - set(input_data.keys())
-        if missing_features:
-            return jsonify({"error": f"Missing features: {missing_features}"}), 400
-        
-        # Convert to TensorFlow dataset
-        def to_tf_dataset(df, label_keys=[]):
-            features = dict(df.drop(label_keys, axis=1, errors='ignore'))
-            return tf.data.Dataset.from_tensor_slices(features).batch(1)
+    # Menghapus angka
+    text = re.sub(r'\d+', '', text)
 
-        input_tf = to_tf_dataset(input_df)
-        
-        # Model prediction
-        prediction = model.predict(input_tf)
+    # Menghapus tanda baca
+    text = text.translate(str.maketrans('', '', string.punctuation))
 
-        # Convert predictions to binary
-        prediction_result = {
-            label: [convert_to_binary(p) for p in prediction[label].flatten()]
-            for label in primary_labels
-        }
-        
-        return jsonify(prediction_result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    # Mengubah teks ke lowercase
+    text = text.lower()
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    # Menghapus stopwords
+    text = ' '.join([word for word in text.split() if word not in stop_words])
+
+    # Stemming
+    text = stemmer.stem(text)
+
+    return text
+
+
+# Load model and tokenizer
+@st.cache(allow_output_mutation=True)
+def load_model():
+    model = pickle.load(open('model/sentiment_jurnal.pkl', 'rb'))
+    tokenizer = pickle.load(open('model/tokenizer_jurnal.pkl', 'rb'))
+    return model, tokenizer
+
+
+def predict_sentiment(text, model, tokenizer):
+    # Preprocess teks
+    text = preprocess_text(text)
+
+    # Tokenisasi
+    seq = tokenizer.texts_to_sequences([text])
+
+    # Padding
+    seq = pad_sequences(seq, maxlen=200, dtype='int32', value=0)
+
+    # Prediksi sentimen
+    sentiment = model.predict(seq, batch_size=1, verbose=2)[0]
+
+    # Menentukan hasil prediksi
+    # Mengambil probabilitas positif dan negatif
+    negative_prob = sentiment[0] * 100  # Persentase untuk negatif
+    positive_prob = sentiment[1] * 100  # Persentase untuk positif
+
+    return negative_prob, positive_prob
+
+
+def run():
+
+    # Input teks
+    user_input = st.text_area("input teks")
+
+    if st.button("Prediksi Sentimen"):
+        if user_input:
+            # Load model dan tokenizer dari file .pkl
+            model = pickle.load(open('model/sentiment_jurnal.pkl', 'rb'))
+            tokenizer = pickle.load(open('model/tokenizer_jurnal.pkl', 'rb'))
+
+            # Prediksi sentimen
+            negative_prob, positive_prob = predict_sentiment(user_input, model, tokenizer)
+
+            # Tampilkan hasil persentase prediksi
+            st.write(f"Sentimen Negatif: {negative_prob:.2f}%")
+            st.write(f"Sentimen Positif: {positive_prob:.2f}%")
+        else:
+            st.warning("Silakan masukkan teks terlebih dahulu")
+
+
+if __name__ == "__main__":
+    run()
